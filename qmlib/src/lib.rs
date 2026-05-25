@@ -3,6 +3,7 @@ mod msr;
 mod hwmon;
 mod drm_drivers;
 mod drm_fdinfo;
+mod intel_pci_ids;
 pub mod proc_info;
 pub mod drm_clients;
 pub mod drm_devices;

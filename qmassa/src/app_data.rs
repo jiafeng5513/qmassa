@@ -431,7 +431,11 @@ impl AppDataDeviceState
                 String::new()
             },
             vdr_dev: if !dinfo.vendor.is_empty() {
-                format!("{} {}", dinfo.vendor, dinfo.device)
+                if dinfo.vendor.starts_with("Intel") && dinfo.device.starts_with("Intel") {
+                    dinfo.device.clone()
+                } else {
+                    format!("{} {}", dinfo.vendor, dinfo.device)
+                }
             } else {
                 String::new()
             },

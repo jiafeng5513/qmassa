@@ -554,6 +554,15 @@ impl DrmDevices
 
     fn device_name(vendor_id: &String, device_id: &String) -> String
     {
+        // For Intel devices, try our built-in PCI ID table first
+        if vendor_id == "8086" {
+            if let Ok(did) = u16::from_str_radix(device_id, 16) {
+                if let Some(name) = crate::intel_pci_ids::intel_device_name(did) {
+                    return name.to_string();
+                }
+            }
+        }
+
         if let Ok(hwdb) = udev::Hwdb::new() {
             let vid = u32::from_str_radix(vendor_id, 16).unwrap();
             let did = u32::from_str_radix(device_id, 16).unwrap();
