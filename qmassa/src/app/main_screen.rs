@@ -815,30 +815,58 @@ impl MainScreen
         let fq_nr = fq_sel as usize;
         let mut cur_freq_ds = Vec::new();
         let mut act_freq_ds = Vec::new();
-        let mut tr_pl1 = Vec::new();
-        let mut tr_status = Vec::new();
 
         let miny = dinfo.freq_limits[fq_nr].minimum as f64;
         let maxy = dinfo.freq_limits[fq_nr].maximum as f64;
+        let tr_y = miny - (maxy - miny) * 0.05;  // throttle indicators slightly below min freq
+
+        // throttle reason data vectors
+        let mut tr_pl1 = Vec::new();
+        let mut tr_pl2 = Vec::new();
+        let mut tr_pl4 = Vec::new();
+        let mut tr_prochot = Vec::new();
+        let mut tr_ratl = Vec::new();
+        let mut tr_thermal = Vec::new();
+        let mut tr_vr_tdc = Vec::new();
+        let mut tr_vr_thermalert = Vec::new();
+
+        // track which reasons were ever triggered
+        let mut has_pl1 = false;
+        let mut has_pl2 = false;
+        let mut has_pl4 = false;
+        let mut has_prochot = false;
+        let mut has_ratl = false;
+        let mut has_thermal = false;
+        let mut has_vr_tdc = false;
+        let mut has_vr_thermalert = false;
 
         for (fqs, xval) in dinfo.dev_stats.freqs.iter().zip(x_vals.iter()) {
             cur_freq_ds.push((*xval, fqs[fq_nr].cur_freq as f64));
             act_freq_ds.push((*xval, fqs[fq_nr].act_freq as f64));
 
-            if fqs[fq_nr].throttle_reasons.pl1 {
-                tr_pl1.push((*xval, (miny + maxy) / 2.0));
-            } else {
-                tr_pl1.push((*xval, -1.0));  // hide it
-            }
-            if fqs[fq_nr].throttle_reasons.status {
-                tr_status.push((*xval, (miny + maxy) / 2.0));
-            } else {
-                tr_status.push((*xval, -1.0));  // hide it
-            }
+            let tr = &fqs[fq_nr].throttle_reasons;
+
+            if tr.pl1 { has_pl1 = true; }
+            if tr.pl2 { has_pl2 = true; }
+            if tr.pl4 { has_pl4 = true; }
+            if tr.prochot { has_prochot = true; }
+            if tr.ratl { has_ratl = true; }
+            if tr.thermal { has_thermal = true; }
+            if tr.vr_tdc { has_vr_tdc = true; }
+            if tr.vr_thermalert { has_vr_thermalert = true; }
+
+            tr_pl1.push((*xval, if tr.pl1 { tr_y } else { -1.0 }));
+            tr_pl2.push((*xval, if tr.pl2 { tr_y } else { -1.0 }));
+            tr_pl4.push((*xval, if tr.pl4 { tr_y } else { -1.0 }));
+            tr_prochot.push((*xval, if tr.prochot { tr_y } else { -1.0 }));
+            tr_ratl.push((*xval, if tr.ratl { tr_y } else { -1.0 }));
+            tr_thermal.push((*xval, if tr.thermal { tr_y } else { -1.0 }));
+            tr_vr_tdc.push((*xval, if tr.vr_tdc { tr_y } else { -1.0 }));
+            tr_vr_thermalert.push((*xval, if tr.vr_thermalert { tr_y } else { -1.0 }));
         }
 
         let fq = &dinfo.dev_stats.freqs.back().unwrap()[fq_nr];
-        let datasets = vec![
+        let mut datasets = vec![
             Dataset::default()
                 .name(format!("Requested [{}]", fq.cur_freq))
                 .marker(symbols::Marker::Braille)
@@ -851,21 +879,75 @@ impl MainScreen
                 .style(tailwind::GREEN.c700)
                 .graph_type(GraphType::Line)
                 .data(&act_freq_ds),
-            Dataset::default()
-                .name("Throttle: Status")
-                .marker(symbols::Marker::Braille)
-                .style(tailwind::ORANGE.c700)
-                .graph_type(GraphType::Line)
-                .data(&tr_status),
-            Dataset::default()
-                .name("Throttle: PL1")
+        ];
+
+        // only add throttle datasets for reasons that were triggered
+        if has_pl1 {
+            datasets.push(Dataset::default()
+                .name("PL1")
                 .marker(symbols::Marker::Braille)
                 .style(tailwind::RED.c700)
                 .graph_type(GraphType::Line)
-                .data(&tr_pl1),
-        ];
+                .data(&tr_pl1));
+        }
+        if has_pl2 {
+            datasets.push(Dataset::default()
+                .name("PL2")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::ORANGE.c700)
+                .graph_type(GraphType::Line)
+                .data(&tr_pl2));
+        }
+        if has_pl4 {
+            datasets.push(Dataset::default()
+                .name("PL4")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::YELLOW.c700)
+                .graph_type(GraphType::Line)
+                .data(&tr_pl4));
+        }
+        if has_thermal {
+            datasets.push(Dataset::default()
+                .name("Thermal")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::ROSE.c600)
+                .graph_type(GraphType::Line)
+                .data(&tr_thermal));
+        }
+        if has_prochot {
+            datasets.push(Dataset::default()
+                .name("PROCHOT")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::PINK.c600)
+                .graph_type(GraphType::Line)
+                .data(&tr_prochot));
+        }
+        if has_ratl {
+            datasets.push(Dataset::default()
+                .name("RATL")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::PURPLE.c600)
+                .graph_type(GraphType::Line)
+                .data(&tr_ratl));
+        }
+        if has_vr_tdc {
+            datasets.push(Dataset::default()
+                .name("VR TDC")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::AMBER.c600)
+                .graph_type(GraphType::Line)
+                .data(&tr_vr_tdc));
+        }
+        if has_vr_thermalert {
+            datasets.push(Dataset::default()
+                .name("VR Therm")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::FUCHSIA.c600)
+                .graph_type(GraphType::Line)
+                .data(&tr_vr_thermalert));
+        }
 
-        let y_bounds = [miny, maxy];
+        let y_bounds = [tr_y, maxy];
         let y_labels = vec![
             Span::raw(format!("{}", miny)),
             Span::raw(format!("{}", (miny + maxy) / 2.0)),
@@ -1232,9 +1314,27 @@ impl MainScreen
                         ds_st.sub_sel == fq_nr as u8 { ly_bold }
                         else { wh_bold }));
                 // gauges
-                let fq_label = Span::styled(
-                    format!("{}/{}", fq.act_freq, fql.maximum),
-                    Style::new().white());
+                let tr = &fq.throttle_reasons;
+                let mut tr_reasons = Vec::new();
+                if tr.pl1 { tr_reasons.push("PL1"); }
+                if tr.pl2 { tr_reasons.push("PL2"); }
+                if tr.pl4 { tr_reasons.push("PL4"); }
+                if tr.thermal { tr_reasons.push("TH"); }
+                if tr.prochot { tr_reasons.push("PH"); }
+                if tr.ratl { tr_reasons.push("RA"); }
+                if tr.vr_tdc { tr_reasons.push("TDC"); }
+                if tr.vr_thermalert { tr_reasons.push("VRT"); }
+
+                let fq_label = if tr_reasons.is_empty() {
+                    Span::styled(
+                        format!("{}/{}", fq.act_freq, fql.maximum),
+                        Style::new().white())
+                } else {
+                    Span::styled(
+                        format!("{}/{} [{}]", fq.act_freq, fql.maximum,
+                            tr_reasons.join(",")),
+                        Style::new().light_red())
+                };
                 let fq_ratio = if fql.maximum > 0 {
                     fq.act_freq as f64 / fql.maximum as f64 } else { 0.0 };
                 dstats_gs.push(App::gauge_colored_from(fq_label, fq_ratio));
