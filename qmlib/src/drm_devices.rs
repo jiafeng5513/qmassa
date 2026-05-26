@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use libc;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "udev_backend")]
 use udev;
 
 use crate::hwmon::Hwmon;
@@ -274,8 +275,8 @@ impl DeviceNodeInfo
     fn from_major(devnode: String, devnum: u64,
         major: u32, major_str: &str) -> Result<DeviceNodeInfo>
     {
-        let mj = libc::major(devnum);
-        let mn = libc::minor(devnum);
+        let mj = libc::major(devnum) as u32;
+        let mn = libc::minor(devnum) as u32;
 
         if major > 0 && mj != major {
             bail!("Expected {} major {:?} but found {:?} for {:?}",
@@ -539,6 +540,12 @@ impl DrmDevices
 
     fn vendor_name(vendor_id: &String) -> String
     {
+        // Intel is the primary vendor we care about
+        if vendor_id == "8086" {
+            return "Intel Corporation".to_string();
+        }
+
+        #[cfg(feature = "udev_backend")]
         if let Ok(hwdb) = udev::Hwdb::new() {
             let id = u32::from_str_radix(vendor_id, 16).unwrap();
             let modalias = format!("pci:v{:08X}*", id);
@@ -563,6 +570,7 @@ impl DrmDevices
             }
         }
 
+        #[cfg(feature = "udev_backend")]
         if let Ok(hwdb) = udev::Hwdb::new() {
             let vid = u32::from_str_radix(vendor_id, 16).unwrap();
             let did = u32::from_str_radix(device_id, 16).unwrap();
@@ -577,6 +585,7 @@ impl DrmDevices
         device_id.clone()
     }
 
+    #[cfg(feature = "udev_backend")]
     fn devices_from_udev(
         dev_slots: &Vec<&str>,
         mut udev_enum: udev::Enumerator,
@@ -653,6 +662,204 @@ impl DrmDevices
         Ok(devs)
     }
 
+    /// Scan DRM devices directly from sysfs without udev.
+    /// This works on Android and other systems where udev is not available.
+    #[cfg(not(feature = "udev_backend"))]
+    fn devices_from_sysfs(
+        dev_slots: &Vec<&str>,
+    ) -> Result<HashMap<String, DrmDeviceInfo>>
+    {
+        let mut devs: HashMap<String, DrmDeviceInfo> = HashMap::new();
+        let drm_class = Path::new("/sys/class/drm");
+
+        if !drm_class.is_dir() {
+            bail!("No /sys/class/drm directory found");
+        }
+
+        let entries = fs::read_dir(drm_class)?;
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_str().unwrap().to_string();
+
+            // Only process card* and renderD* entries that are symlinks
+            if !name.starts_with("card") && !name.starts_with("renderD") {
+                continue;
+            }
+            // Skip card0-boot etc, only want card0, card1, renderD128 etc
+            if name.starts_with("card") && name.contains('-') {
+                continue;
+            }
+
+            let dev_link = drm_class.join(&name).join("device");
+            if !dev_link.is_symlink() {
+                continue;
+            }
+
+            // Resolve the PCI device sysname
+            let sysname = fs::read_link(&dev_link)?
+                .file_name().unwrap()
+                .to_str().unwrap().to_string();
+
+            if !dev_slots.is_empty() &&
+                !dev_slots.iter().any(|&ds| ds == sysname) {
+                continue;
+            }
+
+            // Find the devnode path
+            let devnode = format!("/dev/dri/{}", name);
+            if !Path::new(&devnode).exists() {
+                debug!("Device node {} does not exist, skipping", &devnode);
+                continue;
+            }
+
+            if !devs.contains_key(&sysname) {
+                let pci_dev_path = dev_link.canonicalize()?;
+
+                // Read vendor and device IDs from sysfs
+                let vendor_id = fs::read_to_string(pci_dev_path.join("vendor"))?
+                    .trim().trim_start_matches("0x").to_lowercase();
+                let device_id = fs::read_to_string(pci_dev_path.join("device"))?
+                    .trim().trim_start_matches("0x").to_lowercase();
+                let revision = fs::read_to_string(pci_dev_path.join("revision"))
+                    .unwrap_or_default()
+                    .trim().trim_start_matches("0x").to_string();
+
+                let vendor = DrmDevices::vendor_name(&vendor_id);
+                let device = DrmDevices::device_name(&vendor_id, &device_id);
+
+                // Read driver name from the driver symlink
+                let drv_link = pci_dev_path.join("driver");
+                let drv_name = if drv_link.is_symlink() {
+                    fs::read_link(&drv_link)?
+                        .file_name().unwrap()
+                        .to_str().unwrap().to_string()
+                } else {
+                    String::new()
+                };
+
+                let ndinf = DrmDeviceInfo {
+                    pci_dev: sysname.clone(),
+                    vendor_id,
+                    vendor,
+                    device_id,
+                    device,
+                    revision,
+                    drv_name,
+                    ..Default::default()
+                };
+                devs.insert(sysname.clone(), ndinf);
+            }
+
+            // Get device number from the dev file in sysfs
+            let dev_file = drm_class.join(&name).join("dev");
+            if let Ok(dev_str) = fs::read_to_string(&dev_file) {
+                let parts: Vec<&str> = dev_str.trim().split(':').collect();
+                if parts.len() == 2 {
+                    let major: u32 = parts[0].parse().unwrap_or(0);
+                    let minor: u32 = parts[1].parse().unwrap_or(0);
+                    let devnum = libc::makedev(major, minor);
+                    if let Ok(minf) = DeviceNodeInfo::from_drm(devnode, devnum) {
+                        let dinf = devs.get_mut(&sysname).unwrap();
+                        dinf.dev_nodes.push(minf);
+                    }
+                }
+            }
+        }
+
+        Ok(devs)
+    }
+
+    #[cfg(not(feature = "udev_backend"))]
+    fn vfio_devices_from_sysfs(
+        dev_slots: &Vec<&str>,
+    ) -> Result<HashMap<String, DrmDeviceInfo>>
+    {
+        let mut devs: HashMap<String, DrmDeviceInfo> = HashMap::new();
+        let vfio_class = Path::new("/sys/class/vfio-dev");
+
+        if !vfio_class.is_dir() {
+            return Ok(devs);
+        }
+
+        let entries = fs::read_dir(vfio_class)?;
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_str().unwrap().to_string();
+
+            let dev_link = vfio_class.join(&name).join("device");
+            if !dev_link.is_symlink() {
+                continue;
+            }
+
+            let sysname = fs::read_link(&dev_link)?
+                .file_name().unwrap()
+                .to_str().unwrap().to_string();
+
+            if !dev_slots.is_empty() &&
+                !dev_slots.iter().any(|&ds| ds == sysname) {
+                continue;
+            }
+
+            let devnode = format!("/dev/vfio/devices/{}", name);
+            if !Path::new(&devnode).exists() {
+                continue;
+            }
+
+            if !devs.contains_key(&sysname) {
+                let pci_dev_path = dev_link.canonicalize()?;
+
+                let vendor_id = fs::read_to_string(pci_dev_path.join("vendor"))?
+                    .trim().trim_start_matches("0x").to_lowercase();
+                let device_id = fs::read_to_string(pci_dev_path.join("device"))?
+                    .trim().trim_start_matches("0x").to_lowercase();
+                let revision = fs::read_to_string(pci_dev_path.join("revision"))
+                    .unwrap_or_default()
+                    .trim().trim_start_matches("0x").to_string();
+
+                let vendor = DrmDevices::vendor_name(&vendor_id);
+                let device = DrmDevices::device_name(&vendor_id, &device_id);
+
+                let drv_link = pci_dev_path.join("driver");
+                let drv_name = if drv_link.is_symlink() {
+                    fs::read_link(&drv_link)?
+                        .file_name().unwrap()
+                        .to_str().unwrap().to_string()
+                } else {
+                    String::new()
+                };
+
+                let ndinf = DrmDeviceInfo {
+                    pci_dev: sysname.clone(),
+                    vendor_id,
+                    vendor,
+                    device_id,
+                    device,
+                    revision,
+                    drv_name,
+                    ..Default::default()
+                };
+                devs.insert(sysname.clone(), ndinf);
+            }
+
+            let dev_file = vfio_class.join(&name).join("dev");
+            if let Ok(dev_str) = fs::read_to_string(&dev_file) {
+                let parts: Vec<&str> = dev_str.trim().split(':').collect();
+                if parts.len() == 2 {
+                    let major: u32 = parts[0].parse().unwrap_or(0);
+                    let minor: u32 = parts[1].parse().unwrap_or(0);
+                    let devnum = libc::makedev(major, minor);
+                    if let Ok(minf) = DeviceNodeInfo::from(devnode, devnum) {
+                        let dinf = devs.get_mut(&sysname).unwrap();
+                        dinf.dev_nodes.push(minf);
+                    }
+                }
+            }
+        }
+
+        Ok(devs)
+    }
+
+    #[cfg(feature = "udev_backend")]
     pub fn find_devices(dev_slots: &Vec<&str>,
         drv_opts: &HashMap<&str, Vec<&str>>) -> Result<DrmDevices>
     {
@@ -673,6 +880,56 @@ impl DrmDevices
 
         let vfio_devs = DrmDevices::devices_from_udev(
             dev_slots, vfio_enum, DeviceNodeInfo::from)?;
+
+        for (dname, dinfo) in vfio_devs.into_iter() {
+            if qmds.infos.contains_key(&dname) {
+                warn!("Found {:?} on both DRM and VFIO, ignoring VFIO.",
+                    &dname);
+                continue;
+            }
+            if !dinfo.is_drm_vfio() {
+                debug!("INF: VFIO device {:?} not for DRM physfn, ignoring.",
+                    &dname);
+                continue;
+            }
+            qmds.infos.insert(dname, dinfo);
+        }
+
+        // initialize drivers and log devices found
+        for dinf in qmds.infos.values_mut() {
+            let dopts = drv_opts.get(dinf.drv_name.as_str());
+            if let Some(drv_ref) = drm_drivers::driver_from(dinf, dopts)? {
+                let dref = drv_ref.clone();
+                let mut drv_b = dref.borrow_mut();
+
+                dinf.dev_type = drv_b.dev_type()?;
+                dinf.freq_limits = drv_b.freq_limits()?;
+                dinf.driver = Some(drv_ref);
+            }
+            info!(
+                "New device: pci_dev={}, vendor_id={}, vendor={:?}, \
+                device_id={}, device={:?}, revision={}, drv_name={}, \
+                dev_type={:?}, dev_nodes={:?}",
+                &dinf.pci_dev, &dinf.vendor_id, &dinf.vendor,
+                &dinf.device_id, &dinf.device, &dinf.revision,
+                &dinf.drv_name, &dinf.dev_type, &dinf.dev_nodes
+            );
+        }
+
+        Ok(qmds)
+    }
+
+    #[cfg(not(feature = "udev_backend"))]
+    pub fn find_devices(dev_slots: &Vec<&str>,
+        drv_opts: &HashMap<&str, Vec<&str>>) -> Result<DrmDevices>
+    {
+        let mut qmds = DrmDevices::new();
+
+        // find DRM devices via sysfs
+        qmds.infos = DrmDevices::devices_from_sysfs(dev_slots)?;
+
+        // find VFIO devices via sysfs
+        let vfio_devs = DrmDevices::vfio_devices_from_sysfs(dev_slots)?;
 
         for (dname, dinfo) in vfio_devs.into_iter() {
             if qmds.infos.contains_key(&dname) {

@@ -1,0 +1,13 @@
+# Android cross-compilation config for Intel x86_64
+# Usage: Copy or symlink this as .cargo/config.toml when building for Android
+# Or use: CARGO_BUILD_TARGET=x86_64-linux-android cargo build ...
+#
+# Prerequisites:
+#   rustup target add x86_64-linux-android
+#   Set ANDROID_NDK_HOME to your NDK path (e.g. ~/Android/Sdk/ndk/27.0.12077973)
+
+[target.x86_64-linux-android]
+linker = "x86_64-linux-android34-clang"
+
+[target.i686-linux-android]
+linker = "i686-linux-android34-clang"

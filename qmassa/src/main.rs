@@ -12,6 +12,7 @@ use std::time;
 use anyhow::{bail, Context, Result};
 use env_logger;
 use clap::{ArgAction, Args, Parser, Subcommand};
+#[cfg(not(target_os = "android"))]
 use libc;
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -200,8 +201,16 @@ fn run_default_cmd(args: CliArgs) -> Result<()>
         // base_pid is not set, pick value depending on user:
         //   root       => "1", to scan process tree for whole system
         //   non-root   => "", all processes with accessible info are scanned
-        let euid: u32 = unsafe { libc::geteuid() };
-        base_pid = if euid == 0 { String::from("1") } else { String::from("") };
+        //   android    => "", always scan all pids (no /proc/pid/task/tid/children)
+        #[cfg(target_os = "android")]
+        {
+            base_pid = String::from("");
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let euid: u32 = unsafe { libc::geteuid() };
+            base_pid = if euid == 0 { String::from("1") } else { String::from("") };
+        }
     }
     let no_tui = args.no_tui;
 

@@ -10,8 +10,12 @@ keywords = ["gpu", "graphics", "metrics", "prometheus"]
 categories = ["development-tools::debugging", "graphics"]
 readme = "README.md"
 
+[features]
+default = ["qmlib/default"]
+android = ["qmlib/android"]
+
 [dependencies]
-qmlib = { version = "2.2.0", path = "../qmlib" }
+qmlib = { version = "2.2.0", path = "../qmlib", default-features = false }
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 env_logger = "0.11.10"

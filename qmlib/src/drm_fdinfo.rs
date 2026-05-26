@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "android")]
+use std::os::android::fs::MetadataExt;
+#[cfg(target_os = "linux")]
 use std::os::linux::fs::MetadataExt;
 use std::time;
 use std::fs;
@@ -142,14 +145,14 @@ impl DrmFdinfo
     pub fn is_drm_fd(file: &Path, minor: &mut u32) -> Result<bool>
     {
         let met = fs::metadata(file)?;
-        let st_mode = met.st_mode();
+        let st_mode = met.st_mode() as u32;
         let st_rdev = met.st_rdev();
 
         // check it's char device and DRM device major number
-        let mj = libc::major(st_rdev);
-        let mn = libc::minor(st_rdev);
+        let mj = libc::major(st_rdev) as u32;
+        let mn = libc::minor(st_rdev) as u32;
 
-        if st_mode & libc::S_IFMT == libc::S_IFCHR && mj == DRM_DEVNODE_MAJOR {
+        if st_mode & (libc::S_IFMT as u32) == (libc::S_IFCHR as u32) && mj == DRM_DEVNODE_MAJOR {
             *minor = mn;
             return Ok(true);
         }

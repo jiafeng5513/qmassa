@@ -59,6 +59,14 @@ impl IntelDriverOpts
         opts_vec: Option<&Vec<&str>>) -> IntelDriverOpts
     {
         let mut ret = IntelDriverOpts { opts: 0, };
+
+        // On Android, default to enabling engines PMU since DRM clients
+        // fdinfo-based utilization is typically not available
+        #[cfg(target_os = "android")]
+        {
+            ret.opts |= INTEL_DRV_OPT_ENGS_PMU;
+        }
+
         if opts_vec.is_none() {
             return ret;
         }
