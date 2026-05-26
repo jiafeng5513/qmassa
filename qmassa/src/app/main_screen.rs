@@ -64,16 +64,15 @@ impl DevicesTabState
     }
 }
 
-const DEVICE_STATS_MEMINFO: u8 = 0;
-const DEVICE_STATS_ENGINES: u8 = 1;
+const DEVICE_STATS_ENGINES: u8 = 0;
+const DEVICE_STATS_MEMINFO: u8 = 1;
 const DEVICE_STATS_FREQS: u8 = 2;
 const DEVICE_STATS_POWER: u8 = 3;
 const DEVICE_STATS_TEMPS: u8 = 4;
 const DEVICE_STATS_FANS: u8 = 5;
-const DEVICE_STATS_NPU: u8 = 6;
-const DEVICE_STATS_TOTAL: u8 = 7;
+const DEVICE_STATS_TOTAL: u8 = 6;
 
-const DEVICE_STATS_DEFAULT: u8 = DEVICE_STATS_FREQS;
+const DEVICE_STATS_DEFAULT: u8 = DEVICE_STATS_ENGINES;
 
 const DEVICE_STATS_OP_NEXT: i8 = 0;
 const DEVICE_STATS_OP_PREV: i8 = 1;
@@ -694,6 +693,23 @@ impl MainScreen
             eng_vals.push(nlst);
         }
 
+        // include NPU as an engine line if available
+        let nr_npu = !dinfo.dev_stats.npu_usage.is_empty() as usize;
+        let mut npu_vals = Vec::new();
+        if nr_npu > 0 {
+            let npu_len = dinfo.dev_stats.npu_usage.len();
+            let mut idx = 0;
+            if npu_len < nr_vals {
+                idx = nr_vals - npu_len;
+                for i in 0..idx {
+                    npu_vals.push((x_vals[i], 0.0));
+                }
+            }
+            for i in idx..nr_vals {
+                npu_vals.push((x_vals[i], dinfo.dev_stats.npu_usage[i - idx]));
+            }
+        }
+
         let mut datasets = Vec::new();
         let mut color_idx = 1;
 
@@ -705,6 +721,15 @@ impl MainScreen
                 .graph_type(GraphType::Line)
                 .data(ed));
             color_idx += 1;
+        }
+
+        if nr_npu > 0 {
+            datasets.push(Dataset::default()
+                .name("NPU".to_string())
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::CYAN.c500)
+                .graph_type(GraphType::Line)
+                .data(&npu_vals));
         }
 
         let y_bounds = [0.0, 100.0];
@@ -965,55 +990,6 @@ impl MainScreen
             area);
     }
 
-    fn render_npu_chart(&self, x_vals: &Vec<f64>, x_axis: Axis,
-        dinfo: &AppDataDeviceState, frame: &mut Frame, area: Rect)
-    {
-        let nr_vals = x_vals.len();
-        let mut npu_vals = Vec::new();
-        let npu_len = dinfo.dev_stats.npu_usage.len();
-
-        let mut idx = 0;
-        if npu_len < nr_vals {
-            idx = nr_vals - npu_len;
-            for i in 0..idx {
-                npu_vals.push((x_vals[i], 0.0));
-            }
-        }
-        for i in idx..nr_vals {
-            npu_vals.push((x_vals[i], dinfo.dev_stats.npu_usage[i - idx]));
-        }
-
-        let cur_npu = *dinfo.dev_stats.npu_usage.back().unwrap_or(&0.0);
-        let datasets = vec![
-            Dataset::default()
-                .name(format!("NPU [{:.1}%]", cur_npu))
-                .marker(symbols::Marker::Braille)
-                .style(tailwind::CYAN.c500)
-                .graph_type(GraphType::Line)
-                .data(&npu_vals),
-        ];
-
-        let y_bounds = [0.0, 100.0];
-        let y_labels = vec![
-            Span::raw("0"),
-            Span::raw("50"),
-            Span::raw("100"),
-        ];
-        let y_axis = Axis::default()
-            .title("NPU Usage (%)")
-            .style(Style::new().white())
-            .bounds(y_bounds)
-            .labels(y_labels);
-
-        frame.render_widget(Chart::new(datasets)
-            .x_axis(x_axis)
-            .y_axis(y_axis)
-            .legend_position(Some(LegendPosition::BottomLeft))
-            .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)))
-            .style(Style::new().bold().on_black()),
-            area);
-    }
-
     fn render_dev_stats(&self, dinfo: &AppDataDeviceState,
         tstamps: &VecDeque<u128>, frame: &mut Frame, area: Rect)
     {
@@ -1038,16 +1014,16 @@ impl MainScreen
             }
         }
 
-        // Stats order: meminfo (smem, vram), engines, freqs, power, temps, fans, npu
+        // Stats order: engines + npu, meminfo (smem, vram), freqs, power, temps, fans
         //
-        // # stats = smem + vram(if dgfx) + # engines +
-        //               # freqs + power + # temps + # fans + npu
+        // # stats = # engines + npu + smem + vram(if dgfx) +
+        //               # freqs + power + # temps + # fans
         let nr_stats =
             nr_mem + (nr_mem * is_dgfx as usize) + nr_engines +
             nr_freqs + nr_pwr + nr_temps + nr_fans + nr_npu;
 
         // Can stats fit in just a single table row or not?
-        // If not, split meminfo + engines + freqs, and power + temps + fans
+        // If not, split engines + npu + meminfo + freqs, and power + temps + fans
         let one_row = nr_stats * 10 <= area.width as usize;
 
         let [inf_area, dstats_area, sep, chart_area] = Layout::vertical([
@@ -1089,13 +1065,12 @@ impl MainScreen
 
         // change selected chart, if needed
         let nr_charts: Vec<u8> = vec![
+            (nr_engines > 0 || nr_npu > 0) as u8,  // ENGINES (incl. NPU)
             nr_mem as u8,            // MEMINFO
-            (nr_engines > 0) as u8,  // ENGINES
             nr_freqs as u8,          // FREQS
             nr_pwr as u8,            // POWER
             (nr_temps > 0) as u8,    // TEMPS
             (nr_fans > 0) as u8,     // FANS
-            (nr_npu > 0) as u8,      // NPU
         ];
         let mut ds_st = self.dstats_state.borrow_mut();
         ds_st.exec_req(&nr_charts);
@@ -1122,14 +1097,17 @@ impl MainScreen
 
         let mut dstats_widths: Vec<Constraint> = Vec::new();
         let mut dstats2_widths: Vec<Constraint> = Vec::new();
+        for _ in 0..nr_engines {
+            dstats_widths.push(Constraint::Fill(1));  // ENGINES
+        }
+        if nr_npu > 0 {
+            dstats_widths.push(Constraint::Fill(1));  // NPU (as engine)
+        }
         if nr_mem > 0 {
             dstats_widths.push(Constraint::Length(12));   // SMEM
             if is_dgfx {
                 dstats_widths.push(Constraint::Length(12));   // VRAM
             }
-        }
-        for _ in 0..nr_engines {
-            dstats_widths.push(Constraint::Fill(1));  // ENGINES
         }
         for _ in 0..nr_freqs {
             dstats_widths.push(Constraint::Min(10));      // FREQS
@@ -1145,9 +1123,6 @@ impl MainScreen
         for _ in 0..nr_fans {
             ds_widths_ref.push(Constraint::Min(9));       // FANS
         }
-        if nr_npu > 0 {
-            ds_widths_ref.push(Constraint::Length(9));       // NPU
-        }
 
         // split area for gauges early to calc max eng name & temp name lengths
         let gs_areas = Layout::horizontal(&dstats_widths).split(gauges_area);
@@ -1156,15 +1131,16 @@ impl MainScreen
         } else {
             Layout::horizontal(&dstats2_widths).split(gauges2_area)
         };
-        let en_width = if nr_engines > 0 {
-            gs_areas[nr_mem + (nr_mem * is_dgfx as usize)].width as usize
+        let en_width = if nr_engines > 0 || nr_npu > 0 {
+            gs_areas[0].width as usize
         } else {
             0
         };
         let tp_width = if nr_temps > 0 {
             if one_row {
-                gs_areas[nr_mem + (nr_mem * is_dgfx as usize) +
-                        nr_engines + nr_freqs + nr_pwr].width as usize
+                gs_areas[nr_engines + nr_npu +
+                        nr_mem + (nr_mem * is_dgfx as usize) +
+                        nr_freqs + nr_pwr].width as usize
             } else {
                 gs2_areas[nr_pwr].width as usize
             }
@@ -1179,6 +1155,33 @@ impl MainScreen
         let mut hdrs2_lst: Vec<Line> = Vec::new();
         let mut dstats_gs: Vec<Gauge> = Vec::new();
         let mut dstats2_gs: Vec<Gauge> = Vec::new();
+
+        for en in dinfo.eng_names.iter() {
+            // headers
+            hdrs_lst.push(Line::from(en.to_uppercase())
+                .alignment(if en.len() > en_width {
+                    Alignment::Left } else { Alignment::Center })
+                .style(if ds_st.sel == DEVICE_STATS_ENGINES {
+                    ly_bold } else { wh_bold }));
+            // gauges
+            let eut = dinfo.dev_stats.eng_usage[en].back().unwrap();
+            let label = Span::styled(
+                format!("{:.1}%", eut), Style::new().white());
+            dstats_gs.push(App::gauge_colored_from(label, eut/100.0));
+        }
+
+        if nr_npu > 0 {
+            // header
+            hdrs_lst.push(Line::from("NPU")
+                .alignment(Alignment::Center)
+                .style(if ds_st.sel == DEVICE_STATS_ENGINES {
+                    ly_bold } else { wh_bold }));
+            // gauge
+            let npu_ut = *dinfo.dev_stats.npu_usage.back().unwrap();
+            let npu_label = Span::styled(
+                format!("{:.1}%", npu_ut), Style::new().white());
+            dstats_gs.push(App::gauge_colored_from(npu_label, npu_ut / 100.0));
+        }
 
         if nr_mem > 0 {
             // header
@@ -1211,20 +1214,6 @@ impl MainScreen
                     mi.vram_used as f64 / mi.vram_total as f64 } else { 0.0 };
                 dstats_gs.push(App::gauge_colored_from(vram_label, vram_ratio));
             }
-        }
-
-        for en in dinfo.eng_names.iter() {
-            // headers
-            hdrs_lst.push(Line::from(en.to_uppercase())
-                .alignment(if en.len() > en_width {
-                    Alignment::Left } else { Alignment::Center })
-                .style(if ds_st.sel == DEVICE_STATS_ENGINES {
-                    ly_bold } else { wh_bold }));
-            // gauges
-            let eut = dinfo.dev_stats.eng_usage[en].back().unwrap();
-            let label = Span::styled(
-                format!("{:.1}%", eut), Style::new().white());
-            dstats_gs.push(App::gauge_colored_from(label, eut/100.0));
         }
 
         if nr_freqs > 0 {
@@ -1314,19 +1303,6 @@ impl MainScreen
             }
         }
 
-        if nr_npu > 0 {
-            // header
-            hdrs_lst_ref.push(Line::from("NPU")
-                .alignment(Alignment::Center)
-                .style(if ds_st.sel == DEVICE_STATS_NPU {
-                    ly_bold } else { wh_bold }));
-            // gauge
-            let npu_ut = *dinfo.dev_stats.npu_usage.back().unwrap();
-            let npu_label = Span::styled(
-                format!("{:.1}%", npu_ut), Style::new().white());
-            ds_gs_ref.push(App::gauge_colored_from(npu_label, npu_ut / 100.0));
-        }
-
         // render headers and gauges per row
         let dstats_hdr = [Row::new(hdrs_lst)];
         frame.render_widget(Table::new(dstats_hdr, &dstats_widths)
@@ -1412,10 +1388,6 @@ impl MainScreen
             DEVICE_STATS_FANS => {
                 self.render_fans_chart(
                     &x_vals, x_axis, dinfo, nr_fans, frame, chart_area);
-            },
-            DEVICE_STATS_NPU => {
-                self.render_npu_chart(
-                    &x_vals, x_axis, dinfo, frame, chart_area);
             },
             _ => {
                 error!("Unknown device stats selection: {:?}", ds_st.sel);
