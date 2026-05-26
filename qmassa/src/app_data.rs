@@ -18,6 +18,7 @@ use qmlib::drm_devices::{
     DrmDeviceInfo, DrmDevices};
 use qmlib::drm_clients::{
     DrmClientMemInfo, DrmClientInfo, DrmClientInfoMap, DrmClientInfoMapRef};
+use qmlib::npu::NpuDevice;
 use qmlib::proc_info::ProcInfo;
 
 
@@ -40,6 +41,7 @@ pub struct AppDataDeviceStats
     pub power: VecDeque<DrmDevicePower>,
     pub temps: VecDeque<Vec<DrmDeviceTemperature>>,
     pub fans: VecDeque<Vec<DrmDeviceFan>>,
+    pub npu_usage: VecDeque<f64>,
 }
 
 impl AppDataDeviceStats
@@ -76,6 +78,11 @@ impl AppDataDeviceStats
         }
     }
 
+    fn update_npu_usage(&mut self, usage: f64)
+    {
+        limited_vec_push(&mut self.npu_usage, usage);
+    }
+
     fn new(eng_names: &Vec<String>) -> AppDataDeviceStats
     {
         let mut estats = HashMap::new();
@@ -91,6 +98,7 @@ impl AppDataDeviceStats
             eng_usage: estats,
             temps: VecDeque::new(),
             fans: VecDeque::new(),
+            npu_usage: VecDeque::new(),
         }
     }
 }
@@ -670,6 +678,7 @@ pub struct AppDataLive
 {
     args: CliArgs,
     qmds: DrmDevices,
+    npu: Option<NpuDevice>,
     state: AppDataState,
     start_time: time::Instant,
     json: Option<File>,
@@ -743,6 +752,11 @@ impl AppData for AppDataLive
     {
         self.qmds.refresh()?;
 
+        // refresh NPU utilization
+        if let Some(npu) = &mut self.npu {
+            npu.refresh();
+        }
+
         let mut nstate = AppDataState::new();
         for d in self.qmds.devices() {
             let dinfo = self.qmds.device_info(d).unwrap();
@@ -764,6 +778,14 @@ impl AppData for AppDataLive
             }
 
             ndst.update_stats(dinfo, &cinfos_b);
+
+            // associate NPU utilization with Intel integrated GPU
+            if let Some(npu) = &self.npu {
+                if dinfo.vendor_id == "8086" && dinfo.dev_type.is_integrated() {
+                    ndst.dev_stats.update_npu_usage(npu.utilization);
+                }
+            }
+
             nstate.devs_state.push(ndst);
         }
 
@@ -786,9 +808,12 @@ impl AppDataLive
 {
     pub fn from(args: CliArgs, qmds: DrmDevices) -> AppDataLive
     {
+        let npu = qmlib::npu::find_npu_device();
+
         AppDataLive {
             args,
             qmds,
+            npu,
             state: AppDataState::new(),
             start_time: time::Instant::now(),
             json: None,
