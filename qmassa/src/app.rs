@@ -5,7 +5,10 @@ use std::time;
 
 use anyhow::Result;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseEvent, MouseEventKind};
+use std::io::Write;
+use log::debug;
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{palette::tailwind, Style, Stylize},
@@ -36,6 +39,8 @@ pub trait Screen
     fn draw(&mut self, frame: &mut Frame, tab_area: Rect, main_area: Rect);
 
     fn handle_key_event(&mut self, key_event: KeyEvent) -> Option<ScreenAction>;
+
+    fn handle_mouse_scroll(&mut self, _up: bool) {}
 
     fn status_bar_text(&mut self) -> Vec<Span<'_>>;
 }
@@ -205,19 +210,59 @@ impl App
         }
     }
 
-    fn handle_events(&mut self, timer: time::Duration) -> Result<()>
+    fn handle_mouse_event(&mut self, mouse_event: MouseEvent) {
+        match mouse_event.kind {
+            MouseEventKind::ScrollUp => {
+                if let Some(scr) = self.screens.current() {
+                    scr.handle_mouse_scroll(true);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(scr) = self.screens.current() {
+                    scr.handle_mouse_scroll(false);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_events(&mut self, timer: time::Duration)
     {
-        if event::poll(timer)? {
-            match event::read()? {
-                Event::Key(key_event)
+        let has_event = match event::poll(timer) {
+            Ok(v) => v,
+            Err(e) => {
+                debug!("event::poll error: {:?}", e);
+                return;
+            }
+        };
+        if !has_event {
+            return;
+        }
+
+        // Drain all pending events to prevent queue buildup
+        loop {
+            match event::read() {
+                Ok(Event::Key(key_event))
                     if key_event.kind == KeyEventKind::Press => {
                         self.handle_key_event(key_event)
                     }
-                _ => {}
-            };
+                Ok(Event::Mouse(mouse_event)) => {
+                    self.handle_mouse_event(mouse_event)
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    debug!("event::read error: {:?}", e);
+                    break;
+                }
+            }
+            if self.exit {
+                break;
+            }
+            match event::poll(time::Duration::ZERO) {
+                Ok(true) => continue,
+                _ => break,
+            }
         }
-
-        Ok(())
     }
 
     fn do_run(&mut self, terminal: &mut DefaultTerminal) -> Result<()>
@@ -263,8 +308,10 @@ impl App
                 timer -= elapsed;
             }
 
-            terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events(timer)?;
+            if let Err(e) = terminal.draw(|frame| self.draw(frame)) {
+                debug!("terminal.draw error: {:?}", e);
+            }
+            self.handle_events(timer);
         }
 
         Ok(())
@@ -276,7 +323,12 @@ impl App
         self.screens.enter(main_scr);
 
         let mut terminal = ratatui::init();
+        // Enable mouse button/scroll tracking + SGR extended mode (no drag/motion)
+        std::io::stdout().write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        std::io::stdout().flush()?;
         let res = self.do_run(&mut terminal);
+        std::io::stdout().write_all(b"\x1b[?1006l\x1b[?1000l")?;
+        std::io::stdout().flush()?;
         ratatui::restore();
 
         res

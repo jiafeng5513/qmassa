@@ -350,6 +350,15 @@ impl Screen for MainScreen
         None
     }
 
+    fn handle_mouse_scroll(&mut self, up: bool) {
+        let mut st = self.clis_state.borrow_mut();
+        if up {
+            st.scroll_up();
+        } else {
+            st.scroll_down();
+        }
+    }
+
     fn status_bar_text(&mut self) -> Vec<Span<'_>>
     {
         vec![
