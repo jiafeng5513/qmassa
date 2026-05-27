@@ -191,9 +191,9 @@ impl App
                 self.exit = true;
             },
             KeyCode::Esc => {
-                self.screens.exit();
-                if self.screens.current().is_none() {
-                    self.exit = true;
+                // ESC only navigates back; it should not terminate the app.
+                if self.screens.len() > 1 {
+                    self.screens.exit();
                 }
             },
             _ => {
