@@ -4,6 +4,7 @@ mod hwmon;
 mod drm_drivers;
 mod drm_fdinfo;
 mod intel_pci_ids;
+pub mod mem_bw;
 pub mod npu;
 pub mod proc_info;
 pub mod drm_clients;

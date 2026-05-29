@@ -18,6 +18,7 @@ use qmlib::drm_devices::{
     DrmDeviceInfo, DrmDevices};
 use qmlib::drm_clients::{
     DrmClientMemInfo, DrmClientInfo, DrmClientInfoMap, DrmClientInfoMapRef};
+use qmlib::mem_bw::{MemBwMonitor, MemBandwidth};
 use qmlib::npu::NpuDevice;
 use qmlib::proc_info::ProcInfo;
 
@@ -464,6 +465,7 @@ pub struct AppDataState
 {
     pub timestamps: VecDeque<u128>,
     pub devs_state: Vec<AppDataDeviceState>,
+    pub mem_bw: VecDeque<MemBandwidth>,
 }
 
 impl AppDataState
@@ -490,6 +492,7 @@ impl AppDataState
         AppDataState {
                 timestamps: VecDeque::new(),
                 devs_state: Vec::new(),
+                mem_bw: VecDeque::new(),
         }
     }
 }
@@ -515,6 +518,8 @@ pub trait AppData
     fn devices(&self) -> &Vec<AppDataDeviceState>;
 
     fn get_device(&self, dev: &String) -> Option<&AppDataDeviceState>;
+
+    fn mem_bw(&self) -> &VecDeque<MemBandwidth>;
 
     fn refresh(&mut self) -> Result<bool>;
 }
@@ -571,6 +576,13 @@ impl AppData for AppDataJson
         }
 
         None
+    }
+
+    fn mem_bw(&self) -> &VecDeque<MemBandwidth>
+    {
+        let state = self.states.front().unwrap();
+
+        &state.mem_bw
     }
 
     fn refresh(&mut self) -> Result<bool>
@@ -679,6 +691,7 @@ pub struct AppDataLive
     args: CliArgs,
     qmds: DrmDevices,
     npu: Option<NpuDevice>,
+    mem_bw_mon: Option<MemBwMonitor>,
     state: AppDataState,
     start_time: time::Instant,
     json: Option<File>,
@@ -748,6 +761,11 @@ impl AppData for AppDataLive
         None
     }
 
+    fn mem_bw(&self) -> &VecDeque<MemBandwidth>
+    {
+        &self.state.mem_bw
+    }
+
     fn refresh(&mut self) -> Result<bool>
     {
         self.qmds.refresh()?;
@@ -755,6 +773,11 @@ impl AppData for AppDataLive
         // refresh NPU utilization
         if let Some(npu) = &mut self.npu {
             npu.refresh();
+        }
+
+        // refresh memory bandwidth
+        if let Some(mon) = &mut self.mem_bw_mon {
+            mon.refresh();
         }
 
         let mut nstate = AppDataState::new();
@@ -793,6 +816,12 @@ impl AppData for AppDataLive
         limited_vec_push(&mut nstate.timestamps,
             self.start_time.elapsed().as_millis());
 
+        // carry over mem_bw history and add new sample
+        nstate.mem_bw.append(&mut self.state.mem_bw);
+        if let Some(mon) = &self.mem_bw_mon {
+            limited_vec_push(&mut nstate.mem_bw, mon.bandwidth.clone());
+        }
+
         self.state = nstate;
 
         // if tracking a PID tree, stop when it's not longer running
@@ -809,11 +838,13 @@ impl AppDataLive
     pub fn from(args: CliArgs, qmds: DrmDevices) -> AppDataLive
     {
         let npu = qmlib::npu::find_npu_device();
+        let mem_bw_mon = qmlib::mem_bw::find_mem_bw_monitor();
 
         AppDataLive {
             args,
             qmds,
             npu,
+            mem_bw_mon,
             state: AppDataState::new(),
             start_time: time::Instant::now(),
             json: None,

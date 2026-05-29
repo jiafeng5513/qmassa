@@ -70,7 +70,8 @@ const DEVICE_STATS_FREQS: u8 = 2;
 const DEVICE_STATS_POWER: u8 = 3;
 const DEVICE_STATS_TEMPS: u8 = 4;
 const DEVICE_STATS_FANS: u8 = 5;
-const DEVICE_STATS_TOTAL: u8 = 6;
+const DEVICE_STATS_MEMBW: u8 = 6;
+const DEVICE_STATS_TOTAL: u8 = 7;
 
 const DEVICE_STATS_DEFAULT: u8 = DEVICE_STATS_ENGINES;
 
@@ -1081,6 +1082,62 @@ impl MainScreen
             area);
     }
 
+    fn render_mem_bw_chart(&self, x_vals: &Vec<f64>, x_axis: Axis,
+        frame: &mut Frame, area: Rect)
+    {
+        let model = self.model.borrow();
+        let mem_bw = model.mem_bw();
+
+        let mut read_vals = Vec::new();
+        let mut write_vals = Vec::new();
+        let mut maxy = 0.0;
+
+        for (bw, xval) in mem_bw.iter().zip(x_vals.iter()) {
+            maxy = f64::max(maxy, bw.read_gbs);
+            maxy = f64::max(maxy, bw.write_gbs);
+            read_vals.push((*xval, bw.read_gbs));
+            write_vals.push((*xval, bw.write_gbs));
+        }
+        if maxy == 0.0 {
+            maxy = 1.0;
+        }
+
+        let datasets = vec![
+            Dataset::default()
+                .name("READ")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::BLUE.c700)
+                .graph_type(GraphType::Line)
+                .data(&read_vals),
+            Dataset::default()
+                .name("WRITE")
+                .marker(symbols::Marker::Braille)
+                .style(tailwind::GREEN.c700)
+                .graph_type(GraphType::Line)
+                .data(&write_vals),
+        ];
+
+        let y_bounds = [0.0, maxy];
+        let y_labels = vec![
+            Span::raw("0.0"),
+            Span::raw(format!("{:.2}", maxy / 2.0)),
+            Span::raw(format!("{:.2}", maxy)),
+        ];
+        let y_axis = Axis::default()
+            .title("MEM BW (GB/s)")
+            .style(Style::new().white())
+            .bounds(y_bounds)
+            .labels(y_labels);
+
+        frame.render_widget(Chart::new(datasets)
+            .x_axis(x_axis)
+            .y_axis(y_axis)
+            .legend_position(Some(LegendPosition::BottomLeft))
+            .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)))
+            .style(Style::new().bold().on_black()),
+            area);
+    }
+
     fn render_dev_stats(&self, dinfo: &AppDataDeviceState,
         tstamps: &VecDeque<u128>, frame: &mut Frame, area: Rect)
     {
@@ -1094,6 +1151,7 @@ impl MainScreen
         let mut nr_fans = dinfo.dev_stats.fans.back()
             .unwrap_or(&vec![]).len();
         let nr_npu = !dinfo.dev_stats.npu_usage.is_empty() as usize;
+        let nr_membw = !self.model.borrow().mem_bw().is_empty() as u8;
 
         // if too many temps or fans, limit it to improve visibility
         if !self.model.borrow().args().all_sensors {
@@ -1105,13 +1163,14 @@ impl MainScreen
             }
         }
 
-        // Stats order: engines + npu, meminfo (smem, vram), freqs, power, temps, fans
+        // Stats order: engines + npu, meminfo (smem, vram), freqs, power, temps, fans, mem bw
         //
         // # stats = # engines + npu + smem + vram(if dgfx) +
-        //               # freqs + power + # temps + # fans
+        //               # freqs + power + # temps + # fans + membw
         let nr_stats =
             nr_mem + (nr_mem * is_dgfx as usize) + nr_engines +
-            nr_freqs + nr_pwr + nr_temps + nr_fans + nr_npu;
+            nr_freqs + nr_pwr + nr_temps + nr_fans + nr_npu +
+            nr_membw as usize;
 
         // Can stats fit in just a single table row or not?
         // If not, split engines + npu + meminfo + freqs, and power + temps + fans
@@ -1162,6 +1221,7 @@ impl MainScreen
             nr_pwr as u8,            // POWER
             (nr_temps > 0) as u8,    // TEMPS
             (nr_fans > 0) as u8,     // FANS
+            nr_membw,                // MEMBW
         ];
         let mut ds_st = self.dstats_state.borrow_mut();
         ds_st.exec_req(&nr_charts);
@@ -1213,6 +1273,9 @@ impl MainScreen
         }
         for _ in 0..nr_fans {
             ds_widths_ref.push(Constraint::Min(9));       // FANS
+        }
+        if nr_membw > 0 {
+            ds_widths_ref.push(Constraint::Length(16));    // MEM BW
         }
 
         // split area for gauges early to calc max eng name & temp name lengths
@@ -1412,6 +1475,21 @@ impl MainScreen
             }
         }
 
+        if nr_membw > 0 {
+            // header
+            hdrs_lst_ref.push(Line::from("MEM BW")
+                .alignment(Alignment::Center)
+                .style(if ds_st.sel == DEVICE_STATS_MEMBW {
+                    ly_bold } else { wh_bold }));
+            // gauge
+            let model = self.model.borrow();
+            let bw = model.mem_bw().back().unwrap();
+            let bw_label = Span::styled(
+                format!("R:{:.2} W:{:.2}", bw.read_gbs, bw.write_gbs),
+                Style::new().white());
+            ds_gs_ref.push(App::gauge_colored_from(bw_label, 0.0));
+        }
+
         // render headers and gauges per row
         let dstats_hdr = [Row::new(hdrs_lst)];
         frame.render_widget(Table::new(dstats_hdr, &dstats_widths)
@@ -1497,6 +1575,10 @@ impl MainScreen
             DEVICE_STATS_FANS => {
                 self.render_fans_chart(
                     &x_vals, x_axis, dinfo, nr_fans, frame, chart_area);
+            },
+            DEVICE_STATS_MEMBW => {
+                self.render_mem_bw_chart(
+                    &x_vals, x_axis, frame, chart_area);
             },
             _ => {
                 error!("Unknown device stats selection: {:?}", ds_st.sel);
