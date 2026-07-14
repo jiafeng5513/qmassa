@@ -15,10 +15,10 @@ default = ["qmlib/default"]
 android = ["qmlib/android"]
 
 [dependencies]
-qmlib = { version = "2.2.0", path = "../qmlib", default-features = false }
+qmlib = { version = "2.2.1", path = "../qmlib", default-features = false }
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 env_logger = "0.11.10"
 metrics = "0.24.6"
 metrics-exporter-prometheus = "0.18.3"
-log = "0.4.29"
+log = "0.4.33"
