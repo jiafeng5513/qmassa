@@ -1,5 +1,15 @@
 # Rust tools to monitor GPU stats on Linux
 
+This is a fork of [ulissesf/qmassa](https://github.com/ulissesf/qmassa) with additional features listed below.
+
+## Fork-specific Features
+
+- **Android (x86_64) cross-compilation support** — Added build target for Intel x86 Android devices via NDK toolchain. Use `./build.sh android` to build.
+- **Intel NPU monitoring** — Reads `npu_busy_time_us` from sysfs to report Intel NPU utilization percentage in real time.
+- **Memory bandwidth monitoring** — Uses perf\_event IMC (Integrated Memory Controller) free-running counters to report memory read/write bandwidth in GB/s.
+- **Intel device name mapping** — Provides human-readable Intel GPU device names via built-in PCI ID table.
+- **UI improvements** — Adjusted chart ordering, throttle indicator display, and scroll behavior.
+
 ## Tools
 
 This repository has the 2 main tools below that share the internal [qmlib](qmlib) library.
